@@ -210,6 +210,20 @@ func SpeedTest(c *cli.Context) error {
 
 	http.DefaultClient.Transport = transport
 
+	// get extra headers for the backend requests from JSON file
+	extraHeadersJson := c.String(defs.OptionExtraHeadersJSON)
+	extraHeaders := make(map[string]string)
+
+	if extraHeadersJson != "" {
+		loadedHeaders, err := getExtraHeaders(extraHeadersJson)
+		if err != nil {
+			log.Errorf("Cannot read %s: %s", extraHeadersJson, err)
+			return err
+		}
+
+		extraHeaders = loadedHeaders
+	}
+
 	// load server list
 	var servers []defs.Server
 	var err error
@@ -232,11 +246,11 @@ func SpeedTest(c *cli.Context) error {
 		}
 		log.Infof("Retrieving server list from %s", serverUrl)
 
-		servers, err = getServerList(c.Bool(defs.OptionSecure), serverUrl, c.IntSlice(defs.OptionExclude), c.IntSlice(defs.OptionServer), !c.Bool(defs.OptionList))
+		servers, err = getServerList(c.Bool(defs.OptionSecure), serverUrl, c.IntSlice(defs.OptionExclude), c.IntSlice(defs.OptionServer), !c.Bool(defs.OptionList), extraHeaders)
 
 		if err != nil {
 			log.Info("Retry with /.well-known/librespeed")
-			servers, err = getServerList(c.Bool(defs.OptionSecure), serverUrl+"/.well-known/librespeed", c.IntSlice(defs.OptionExclude), c.IntSlice(defs.OptionServer), !c.Bool(defs.OptionList))
+			servers, err = getServerList(c.Bool(defs.OptionSecure), serverUrl+"/.well-known/librespeed", c.IntSlice(defs.OptionExclude), c.IntSlice(defs.OptionServer), !c.Bool(defs.OptionList), extraHeaders)
 		}
 	}
 	if err != nil {
@@ -258,7 +272,7 @@ func SpeedTest(c *cli.Context) error {
 
 	// if --server is given, do speed tests with all of them
 	if len(c.IntSlice(defs.OptionServer)) > 0 {
-		return doSpeedTest(c, servers, telemetryServer, network, silent)
+		return doSpeedTest(c, servers, telemetryServer, network, silent, extraHeaders)
 	} else {
 		// else select the fastest server from the list
 		log.Info("Selecting the fastest server based on ping")
@@ -272,7 +286,7 @@ func SpeedTest(c *cli.Context) error {
 
 		// spawn 10 concurrent pingers
 		for i := 0; i < 10; i++ {
-			go pingWorker(jobs, results, &wg, c.String(defs.OptionSource), network, c.Bool(defs.OptionNoICMP))
+			go pingWorker(jobs, results, &wg, c.String(defs.OptionSource), network, c.Bool(defs.OptionNoICMP), extraHeaders)
 		}
 
 		// send ping jobs to workers
@@ -309,11 +323,11 @@ func SpeedTest(c *cli.Context) error {
 		}
 
 		// do speed test on the server
-		return doSpeedTest(c, []defs.Server{servers[serverIdx]}, telemetryServer, network, silent)
+		return doSpeedTest(c, []defs.Server{servers[serverIdx]}, telemetryServer, network, silent, extraHeaders)
 	}
 }
 
-func pingWorker(jobs <-chan PingJob, results chan<- PingResult, wg *sync.WaitGroup, srcIp, network string, noICMP bool) {
+func pingWorker(jobs <-chan PingJob, results chan<- PingResult, wg *sync.WaitGroup, srcIp, network string, noICMP bool, extraHeaders map[string]string) {
 	for {
 		job := <-jobs
 		server := job.Server
@@ -326,12 +340,12 @@ func pingWorker(jobs <-chan PingJob, results chan<- PingResult, wg *sync.WaitGro
 		}
 
 		// check the server is up by accessing the ping URL and checking its returned value == empty and status code == 200
-		if server.IsUp() {
+		if server.IsUp(extraHeaders) {
 			// skip ICMP if option given
 			server.NoICMP = noICMP
 
 			// if server is up, get ping
-			ping, _, err := server.ICMPPingAndJitter(1, srcIp, network)
+			ping, _, err := server.ICMPPingAndJitter(1, srcIp, network, extraHeaders)
 			if err != nil {
 				log.Debugf("Can't ping server %s (%s), skipping", server.Name, u.Hostname())
 				wg.Done()
@@ -348,7 +362,7 @@ func pingWorker(jobs <-chan PingJob, results chan<- PingResult, wg *sync.WaitGro
 }
 
 // getServerList fetches the server JSON from a remote server
-func getServerList(forceHTTPS bool, serverList string, excludes, specific []int, filter bool) ([]defs.Server, error) {
+func getServerList(forceHTTPS bool, serverList string, excludes, specific []int, filter bool, extraHeaders map[string]string) ([]defs.Server, error) {
 	// --exclude and --server cannot be used at the same time
 	if len(excludes) > 0 && len(specific) > 0 {
 		return nil, errors.New("either --exclude or --server can be used")
@@ -361,6 +375,9 @@ func getServerList(forceHTTPS bool, serverList string, excludes, specific []int,
 		return nil, err
 	}
 	req.Header.Set("User-Agent", defs.UserAgent)
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -473,4 +490,20 @@ func contains(arr []int, val int) bool {
 		}
 	}
 	return false
+}
+
+// getExtraHeaders loads the extra headers JSON from a local file
+func getExtraHeaders(jsonFile string) (map[string]string, error) {
+	headers := make(map[string]string)
+
+	b, err := ioutil.ReadFile(jsonFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := json.Unmarshal(b, &headers); err != nil {
+		return nil, err
+	}
+
+	return headers, nil
 }

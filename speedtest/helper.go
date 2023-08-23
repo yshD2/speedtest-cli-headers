@@ -28,7 +28,7 @@ const (
 )
 
 // doSpeedTest is where the actual speed test happens
-func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.TelemetryServer, network string, silent bool) error {
+func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.TelemetryServer, network string, silent bool, extraHeaders map[string]string) error {
 	if serverCount := len(servers); serverCount > 1 {
 		log.Infof("Testing against %d servers", serverCount)
 	}
@@ -53,8 +53,8 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 			log.Infof("Sponsored by: %s", sponsorMsg)
 		}
 
-		if currentServer.IsUp() {
-			ispInfo, err := currentServer.GetIPInfo(c.String(defs.OptionDistance))
+		if currentServer.IsUp(extraHeaders) {
+			ispInfo, err := currentServer.GetIPInfo(c.String(defs.OptionDistance), extraHeaders)
 			if err != nil {
 				log.Errorf("Failed to get IP info: %s", err)
 				return err
@@ -72,7 +72,7 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 			// skip ICMP if option given
 			currentServer.NoICMP = c.Bool(defs.OptionNoICMP)
 
-			p, jitter, err := currentServer.ICMPPingAndJitter(pingCount, c.String(defs.OptionSource), network)
+			p, jitter, err := currentServer.ICMPPingAndJitter(pingCount, c.String(defs.OptionSource), network, extraHeaders)
 			if err != nil {
 				log.Errorf("Failed to get ping and jitter: %s", err)
 				return err
@@ -89,7 +89,7 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 			if c.Bool(defs.OptionNoDownload) {
 				log.Info("Download test is disabled")
 			} else {
-				download, br, err := currentServer.Download(silent, c.Bool(defs.OptionBytes), c.Bool(defs.OptionMebiBytes), c.Int(defs.OptionConcurrent), c.Int(defs.OptionChunks), time.Duration(c.Int(defs.OptionDuration))*time.Second)
+				download, br, err := currentServer.Download(silent, c.Bool(defs.OptionBytes), c.Bool(defs.OptionMebiBytes), c.Int(defs.OptionConcurrent), c.Int(defs.OptionChunks), time.Duration(c.Int(defs.OptionDuration))*time.Second, extraHeaders)
 				if err != nil {
 					log.Errorf("Failed to get download speed: %s", err)
 					return err
@@ -104,7 +104,7 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 			if c.Bool(defs.OptionNoUpload) {
 				log.Info("Upload test is disabled")
 			} else {
-				upload, bw, err := currentServer.Upload(c.Bool(defs.OptionNoPreAllocate), silent, c.Bool(defs.OptionBytes), c.Bool(defs.OptionMebiBytes), c.Int(defs.OptionConcurrent), c.Int(defs.OptionUploadSize), time.Duration(c.Int(defs.OptionDuration))*time.Second)
+				upload, bw, err := currentServer.Upload(c.Bool(defs.OptionNoPreAllocate), silent, c.Bool(defs.OptionBytes), c.Bool(defs.OptionMebiBytes), c.Int(defs.OptionConcurrent), c.Int(defs.OptionUploadSize), time.Duration(c.Int(defs.OptionDuration))*time.Second, extraHeaders)
 				if err != nil {
 					log.Errorf("Failed to get upload speed: %s", err)
 					return err
@@ -130,7 +130,7 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 				extra.ServerName = currentServer.Name
 				extra.Extra = c.String(defs.OptionTelemetryExtra)
 
-				if link, err := sendTelemetry(telemetryServer, ispInfo, downloadValue, uploadValue, p, jitter, currentServer.TLog.String(), extra); err != nil {
+				if link, err := sendTelemetry(telemetryServer, ispInfo, downloadValue, uploadValue, p, jitter, currentServer.TLog.String(), extra, extraHeaders); err != nil {
 					log.Errorf("Error when sending telemetry data: %s", err)
 				} else {
 					shareLink = link
@@ -208,7 +208,7 @@ func doSpeedTest(c *cli.Context, servers []defs.Server, telemetryServer defs.Tel
 }
 
 // sendTelemetry sends the telemetry result to server, if --share is given
-func sendTelemetry(telemetryServer defs.TelemetryServer, ispInfo *defs.GetIPResult, download, upload, pingVal, jitter float64, logs string, extra defs.TelemetryExtra) (string, error) {
+func sendTelemetry(telemetryServer defs.TelemetryServer, ispInfo *defs.GetIPResult, download, upload, pingVal, jitter float64, logs string, extra defs.TelemetryExtra, extraHeaders map[string]string) (string, error) {
 	var buf bytes.Buffer
 	wr := multipart.NewWriter(&buf)
 
@@ -287,6 +287,9 @@ func sendTelemetry(telemetryServer defs.TelemetryServer, ispInfo *defs.GetIPResu
 	}
 	req.Header.Set("Content-Type", wr.FormDataContentType())
 	req.Header.Set("User-Agent", defs.UserAgent)
+	for key, value := range extraHeaders {
+		req.Header.Set(key, value)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

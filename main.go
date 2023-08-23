@@ -209,6 +209,10 @@ func main() {
 				Usage: "Send a custom message along with the telemetry results.\n" +
 					"\tImplies --" + defs.OptionShare,
 			},
+			&cli.StringFlag{
+				Name: defs.OptionExtraHeadersJSON,
+				Usage: "Load extra headers for the backend requests from a JSON file",
+			},
 		},
 	}
 
